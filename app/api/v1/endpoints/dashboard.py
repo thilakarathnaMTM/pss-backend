@@ -5,6 +5,8 @@ from app.core.deps import get_db, get_current_user
 from app.models.user import User
 from app.models.factory import Factory
 from app.models.machine import Machine
+from app.models.tariff import Tariff
+from app.services.optimizer import machine_baseline_cost
 from app.models.optimization import OptimizationResult, OptimizationSummary
 from app.schemas.dashboard import DashboardOut
 from app.schemas.optimization import ScheduleItem
@@ -43,6 +45,7 @@ async def get_dashboard(
             total_energy_kwh=0,
             cost_per_unit=0,
             machines_optimized=0,
+            skipped_machines=[],
             schedules=[]
         )
 
@@ -54,10 +57,14 @@ async def get_dashboard(
     machines_result = await db.execute(select(Machine).where(Machine.factory_id == factory.id))
     machines = {m.id: m for m in machines_result.scalars().all()}
 
+    tariffs = (await db.execute(select(Tariff))).scalars().all()
+
     schedules = []
     total_energy = 0.0
     for r in opt_results:
         m = machines.get(r.machine_id)
+        baseline = machine_baseline_cost(m, tariffs, factory.start_time, factory.end_time) if m else None
+        saving = round(max(baseline - r.cost, 0), 2) if baseline is not None else 0
         power_kw = ((m.quantity * m.power_w) / 1000.0) if m else 0.0
         schedules.append(ScheduleItem(
             machine_id=r.machine_id,
@@ -69,7 +76,7 @@ async def get_dashboard(
             cost=r.cost,
             total_power_kw=round(power_kw, 3),
             required_hours=m.required_hours if m else 0,
-            saving=0
+            saving=saving
         ))
         total_energy += r.energy_kwh
 
@@ -86,5 +93,6 @@ async def get_dashboard(
         total_energy_kwh=round(total_energy, 2),
         cost_per_unit=cost_per_unit,
         machines_optimized=len(schedules),
+        skipped_machines=[m.name for mid, m in machines.items() if mid not in {r.machine_id for r in opt_results}],
         schedules=schedules
     )

@@ -9,6 +9,13 @@ Backend for the Apex Energy SME garment factory optimizer.
 
 ## Setup
 
+First thing in terminal run this
+
+```bash
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+
+```
+
 ```bash
 cd backend
 

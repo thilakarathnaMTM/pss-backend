@@ -22,3 +22,4 @@ class OptimizationResponse(BaseModel):
     monthly_saving: float
     saving_percentage: float
     total_energy_kwh: float
+    skipped_machines: List[str] = []

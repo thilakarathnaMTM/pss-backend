@@ -1,6 +1,15 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from datetime import time
 from typing import Optional
+
+def check_window(start: time, end: time, hours: float) -> None:
+    """Raise ValueError if the window is empty, overnight, or shorter than the required runtime."""
+    s = start.hour * 60 + start.minute
+    e = end.hour * 60 + end.minute
+    if e <= s:
+        raise ValueError("Available end time must be after the start time (overnight windows are not supported)")
+    if hours * 60 > e - s:
+        raise ValueError(f"Required runtime ({hours} h) is longer than the available window ({(e - s) / 60:.1f} h)")
 
 class MachineCreate(BaseModel):
     name: str
@@ -13,6 +22,11 @@ class MachineCreate(BaseModel):
     available_end: time
     priority: str = "Medium"
     color: str = "blue"
+
+    @model_validator(mode="after")
+    def _window_ok(self):
+        check_window(self.available_start, self.available_end, self.required_hours)
+        return self
 
 class MachineUpdate(BaseModel):
     name: Optional[str] = None

@@ -3,6 +3,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import time
+from uuid import uuid4
 from app.core.deps import get_db, get_current_user
 from app.core.security import get_password_hash, verify_password, create_access_token
 from app.models.user import User
@@ -19,7 +20,7 @@ async def signup(data: UserCreate, db: AsyncSession = Depends(get_db)):
 
     factory = Factory(
         name=data.factory_name,
-        code=f"{data.factory_name[:3].upper()}-01",
+        code=f"{data.factory_name[:3].upper()}-{uuid4().hex[:4].upper()}",
         start_time=time(7, 0),
         end_time=time(21, 0),
         working_days=26

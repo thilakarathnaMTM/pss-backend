@@ -16,6 +16,7 @@ from app.models.report import Report
 from app.models.optimization import OptimizationResult, OptimizationSummary
 from app.core.security import get_password_hash
 from app.services.optimizer import optimize_schedule, calculate_baseline_cost
+from app.services.scheduler import recalculate
 
 settings = get_settings()
 
@@ -29,7 +30,7 @@ async def seed_data(db: AsyncSession):
         code="NOOK-01",
         tariff_plan="CEB Industrial Tariff I-2 / I-3",
         start_time=time(7, 0),
-        end_time=time(21, 0),
+        end_time=time(23, 30),
         working_days=26
     )
     db.add(factory)
@@ -78,7 +79,7 @@ async def seed_data(db: AsyncSession):
             "power_w": 750.0,
             "required_hours": 6.0,
             "available_start": time(8, 0),
-            "available_end": time(18, 0),
+            "available_end": time(22, 0),
             "priority": "Medium",
             "color": "amber",
         },
@@ -101,8 +102,8 @@ async def seed_data(db: AsyncSession):
             "quantity": 1,
             "power_w": 5500.0,
             "required_hours": 2.0,
-            "available_start": time(7, 0),
-            "available_end": time(20, 0),
+            "available_start": time(18, 30),
+            "available_end": time(23, 30),
             "priority": "Low",
             "color": "green",
         },
@@ -190,6 +191,11 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as db:
         await seed_data(db)
+    # Refresh every factory's stored schedule so nothing stale survives a restart.
+    async with AsyncSessionLocal() as db:
+        for factory in (await db.execute(select(Factory))).scalars().all():
+            await recalculate(db, factory)
+        await db.commit()
     yield
     await engine.dispose()
 

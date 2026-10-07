@@ -1,30 +1,30 @@
 from datetime import time
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 import pulp
 from app.models.machine import Machine
 from app.models.tariff import Tariff
+
+SLOT_MINUTES = 30
+DEFAULT_RATE = 47.0  # used only if no tariff period covers a minute
 
 def time_to_minutes(t: time) -> int:
     return t.hour * 60 + t.minute
 
 def minutes_to_time(m: int) -> time:
-    h = m // 60
-    mi = m % 60
-    if h >= 24:
-        h = h % 24
-    return time(h, mi)
+    return time((m // 60) % 24, m % 60)
 
 def get_rate_at(minute: int, tariffs: List[Tariff]) -> float:
+    minute = minute % 1440
     for tariff in tariffs:
         start = time_to_minutes(tariff.start_time)
         end = time_to_minutes(tariff.end_time)
         if start < end:
             if start <= minute < end:
                 return tariff.rate_per_kwh
-        else:
+        else:  # period wraps past midnight (e.g. 22:30 -> 05:30)
             if minute >= start or minute < end:
                 return tariff.rate_per_kwh
-    return 47.0
+    return DEFAULT_RATE
 
 def machine_power_kw(machine: Machine) -> float:
     return (machine.quantity * machine.power_w) / 1000.0
@@ -36,33 +36,54 @@ def cost_for_window(
     slot_minutes: int,
     tariffs: List[Tariff],
 ) -> float:
+    """cost = sum over slots of (kW x slot hours x rate at that slot)"""
     cost = 0.0
     for i in range(required_slots):
-        minute = start_m + i * slot_minutes
-        rate = get_rate_at(minute, tariffs)
+        rate = get_rate_at(start_m + i * slot_minutes, tariffs)
         cost += power_kw * (slot_minutes / 60.0) * rate
     return cost
+
+def feasible_starts(
+    machine: Machine,
+    factory_start: time,
+    factory_end: time,
+    slot_minutes: int = SLOT_MINUTES,
+) -> Tuple[int, List[int]]:
+    """Return (required_slots, every legal start minute inside machine window AND factory hours)."""
+    required_slots = int(round(machine.required_hours * 60 / slot_minutes))
+    if required_slots <= 0:
+        return 0, []
+    lo = max(time_to_minutes(machine.available_start), time_to_minutes(factory_start))
+    hi = min(time_to_minutes(machine.available_end), time_to_minutes(factory_end))
+    return required_slots, list(range(lo, hi - required_slots * slot_minutes + 1, slot_minutes))
+
+def machine_baseline_cost(
+    machine: Machine,
+    tariffs: List[Tariff],
+    factory_start: time,
+    factory_end: time,
+    slot_minutes: int = SLOT_MINUTES,
+) -> Optional[float]:
+    """Cost if the machine starts as early as allowed (None if it cannot be scheduled)."""
+    required_slots, starts = feasible_starts(machine, factory_start, factory_end, slot_minutes)
+    if not starts:
+        return None
+    return cost_for_window(machine_power_kw(machine), starts[0], required_slots, slot_minutes, tariffs)
 
 def calculate_baseline_cost(
     machines: List[Machine],
     tariffs: List[Tariff],
     factory_start: time,
     factory_end: time,
-    slot_minutes: int = 30,
+    slot_minutes: int = SLOT_MINUTES,
 ) -> float:
+    # Machines that cannot be scheduled are excluded, same as in optimize_schedule,
+    # so the two totals are always comparable.
     total = 0.0
-    factory_start_m = time_to_minutes(factory_start)
-    factory_end_m = time_to_minutes(factory_end)
     for machine in machines:
-        power_kw = machine_power_kw(machine)
-        required_slots = int(round(machine.required_hours * 60 / slot_minutes))
-        if required_slots <= 0:
-            continue
-        start_m = max(time_to_minutes(machine.available_start), factory_start_m)
-        end_limit = min(time_to_minutes(machine.available_end), factory_end_m)
-        if start_m + required_slots * slot_minutes > end_limit:
-            start_m = max(factory_start_m, end_limit - required_slots * slot_minutes)
-        total += cost_for_window(power_kw, start_m, required_slots, slot_minutes, tariffs)
+        cost = machine_baseline_cost(machine, tariffs, factory_start, factory_end, slot_minutes)
+        if cost is not None:
+            total += cost
     return round(total, 2)
 
 def optimize_schedule(
@@ -70,65 +91,39 @@ def optimize_schedule(
     tariffs: List[Tariff],
     factory_start: time,
     factory_end: time,
-    slot_minutes: int = 30
+    slot_minutes: int = SLOT_MINUTES,
 ) -> List[Dict]:
     results = []
-    factory_start_m = time_to_minutes(factory_start)
-    factory_end_m = time_to_minutes(factory_end)
-
     for machine in machines:
         power_kw = machine_power_kw(machine)
-        required_slots = int(round(machine.required_hours * 60 / slot_minutes))
-        if required_slots <= 0:
+        required_slots, starts = feasible_starts(machine, factory_start, factory_end, slot_minutes)
+        if not starts:
             continue
 
-        avail_start = max(time_to_minutes(machine.available_start), factory_start_m)
-        avail_end = min(time_to_minutes(machine.available_end), factory_end_m)
+        costs = {s: cost_for_window(power_kw, s, required_slots, slot_minutes, tariffs) for s in starts}
 
-        possible_starts = list(range(avail_start, avail_end - required_slots * slot_minutes + 1, slot_minutes))
-        if not possible_starts:
-            continue
-
+        # Binary choice: exactly one start time per machine, minimise its cost.
+        # The tiny 1e-6 * start term breaks ties in favour of the earlier start.
         prob = pulp.LpProblem(f"opt_machine_{machine.id}", pulp.LpMinimize)
-        start_vars = pulp.LpVariable.dicts("start", possible_starts, cat="Binary")
-        prob += pulp.lpSum([start_vars[s] for s in possible_starts]) == 1
-
-        cost_terms = []
-        for s in possible_starts:
-            cost = cost_for_window(power_kw, s, required_slots, slot_minutes, tariffs)
-            cost_terms.append(cost * start_vars[s])
-        prob += pulp.lpSum(cost_terms)
-
+        x = pulp.LpVariable.dicts("start", starts, cat="Binary")
+        prob += pulp.lpSum((costs[s] + 1e-6 * s) * x[s] for s in starts)
+        prob += pulp.lpSum(x[s] for s in starts) == 1
         status = prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=10))
         if pulp.LpStatus[status] != "Optimal":
             continue
 
-        chosen = None
-        for s in possible_starts:
-            if pulp.value(start_vars[s]) is not None and pulp.value(start_vars[s]) > 0.5:
-                chosen = s
-                break
+        chosen = next((s for s in starts if (pulp.value(x[s]) or 0) > 0.5), None)
         if chosen is None:
             continue
 
-        start_t = minutes_to_time(chosen)
-        end_t = minutes_to_time(chosen + required_slots * slot_minutes)
-        energy = round(power_kw * machine.required_hours, 2)
-        cost = cost_for_window(power_kw, chosen, required_slots, slot_minutes, tariffs)
-        baseline = cost_for_window(
-            power_kw,
-            max(time_to_minutes(machine.available_start), factory_start_m),
-            required_slots,
-            slot_minutes,
-            tariffs,
-        )
-
+        cost = costs[chosen]
+        baseline = costs[starts[0]]
         results.append({
             "machine_id": machine.id,
             "machine_name": machine.name,
-            "scheduled_start": start_t,
-            "scheduled_end": end_t,
-            "energy_kwh": energy,
+            "scheduled_start": minutes_to_time(chosen),
+            "scheduled_end": minutes_to_time(chosen + required_slots * slot_minutes),
+            "energy_kwh": round(power_kw * required_slots * slot_minutes / 60.0, 2),
             "cost": round(cost, 2),
             "total_power_kw": round(power_kw, 3),
             "required_hours": machine.required_hours,

@@ -13,4 +13,5 @@ class DashboardOut(BaseModel):
     total_energy_kwh: float
     cost_per_unit: float
     machines_optimized: int
+    skipped_machines: List[str] = []
     schedules: List[ScheduleItem]
