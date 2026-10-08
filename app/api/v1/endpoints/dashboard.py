@@ -7,6 +7,7 @@ from app.models.factory import Factory
 from app.models.machine import Machine
 from app.models.tariff import Tariff
 from app.services.optimizer import machine_baseline_cost
+from app.services.planning import productive_hours
 from app.models.optimization import OptimizationResult, OptimizationSummary
 from app.schemas.dashboard import DashboardOut
 from app.schemas.optimization import ScheduleItem
@@ -81,6 +82,7 @@ async def get_dashboard(
         total_energy += r.energy_kwh
 
     cost_per_unit = round(summary.optimized_cost / total_energy, 2) if total_energy > 0 else 0
+    hours = productive_hours(factory.start_time, factory.end_time)
 
     return DashboardOut(
         factory_name=factory.name,
@@ -92,6 +94,9 @@ async def get_dashboard(
         saving_percentage=summary.saving_percentage,
         total_energy_kwh=round(total_energy, 2),
         cost_per_unit=cost_per_unit,
+        productive_hours=round(hours, 2),
+        kwh_per_productive_hour=round(total_energy / hours, 2) if hours > 0 else 0,
+        cost_per_productive_hour=round(summary.optimized_cost / hours, 2) if hours > 0 else 0,
         machines_optimized=len(schedules),
         skipped_machines=[m.name for mid, m in machines.items() if mid not in {r.machine_id for r in opt_results}],
         schedules=schedules

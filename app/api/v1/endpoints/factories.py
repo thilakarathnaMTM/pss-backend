@@ -41,7 +41,7 @@ async def update_my_factory(
     for field, value in changes.items():
         setattr(factory, field, value)
     await db.flush()
-    await recalculate(db, factory)
+    await recalculate(db, factory, trigger="Factory settings updated")
     await db.commit()
     await db.refresh(factory)
     return factory

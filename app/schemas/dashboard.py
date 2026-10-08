@@ -12,6 +12,9 @@ class DashboardOut(BaseModel):
     saving_percentage: float
     total_energy_kwh: float
     cost_per_unit: float
+    productive_hours: float = 0
+    kwh_per_productive_hour: float = 0
+    cost_per_productive_hour: float = 0
     machines_optimized: int
     skipped_machines: List[str] = []
     schedules: List[ScheduleItem]

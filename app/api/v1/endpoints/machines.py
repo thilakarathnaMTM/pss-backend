@@ -6,7 +6,7 @@ from app.core.deps import get_db, get_current_user
 from app.models.user import User
 from app.models.machine import Machine
 from app.services.scheduler import recalculate, get_factory
-from app.schemas.machine import MachineCreate, MachineUpdate, MachineOut, check_window
+from app.schemas.machine import MachineCreate, MachineUpdate, MachineOut, check_window, check_year
 
 router = APIRouter(prefix="/machines", tags=["Machines"])
 
@@ -26,7 +26,7 @@ async def create_machine(
     machine = Machine(factory_id=current_user.factory_id, **data.model_dump())
     db.add(machine)
     await db.flush()
-    await recalculate(db, await get_factory(db, current_user.factory_id))
+    await recalculate(db, await get_factory(db, current_user.factory_id), trigger=f"Machine added: {machine.name}")
     await db.commit()
     await db.refresh(machine)
     return to_out(machine)
@@ -75,13 +75,15 @@ async def update_machine(
             changes.get("available_start", machine.available_start),
             changes.get("available_end", machine.available_end),
             changes.get("required_hours", machine.required_hours),
+            changes.get("usual_start", machine.usual_start),
         )
+        check_year(changes.get("manufactured_year"))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     for field, value in changes.items():
         setattr(machine, field, value)
     await db.flush()
-    await recalculate(db, await get_factory(db, current_user.factory_id))
+    await recalculate(db, await get_factory(db, current_user.factory_id), trigger=f"Machine updated: {machine.name}")
     await db.commit()
     await db.refresh(machine)
     return to_out(machine)
@@ -98,8 +100,9 @@ async def delete_machine(
     machine = result.scalar_one_or_none()
     if not machine:
         raise HTTPException(status_code=404, detail="Machine not found")
+    name = machine.name
     await db.delete(machine)
     await db.flush()
-    await recalculate(db, await get_factory(db, current_user.factory_id))
+    await recalculate(db, await get_factory(db, current_user.factory_id), trigger=f"Machine deleted: {name}")
     await db.commit()
     return None

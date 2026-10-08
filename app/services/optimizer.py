@@ -57,6 +57,15 @@ def feasible_starts(
     hi = min(time_to_minutes(machine.available_end), time_to_minutes(factory_end))
     return required_slots, list(range(lo, hi - required_slots * slot_minutes + 1, slot_minutes))
 
+def baseline_start(machine: Machine, starts: List[int]) -> int:
+    """The "before optimization" start: the machine's usual start time (snapped to the nearest legal start),
+    or the earliest legal start when no usual time is recorded."""
+    usual = getattr(machine, "usual_start", None)
+    if usual is None:
+        return starts[0]
+    u = time_to_minutes(usual)
+    return min(starts, key=lambda s: (abs(s - u), s))
+
 def machine_baseline_cost(
     machine: Machine,
     tariffs: List[Tariff],
@@ -64,11 +73,11 @@ def machine_baseline_cost(
     factory_end: time,
     slot_minutes: int = SLOT_MINUTES,
 ) -> Optional[float]:
-    """Cost if the machine starts as early as allowed (None if it cannot be scheduled)."""
+    """Cost at the machine's usual (un-optimized) start time (None if it cannot be scheduled)."""
     required_slots, starts = feasible_starts(machine, factory_start, factory_end, slot_minutes)
     if not starts:
         return None
-    return cost_for_window(machine_power_kw(machine), starts[0], required_slots, slot_minutes, tariffs)
+    return cost_for_window(machine_power_kw(machine), baseline_start(machine, starts), required_slots, slot_minutes, tariffs)
 
 def calculate_baseline_cost(
     machines: List[Machine],
@@ -92,7 +101,10 @@ def optimize_schedule(
     factory_start: time,
     factory_end: time,
     slot_minutes: int = SLOT_MINUTES,
+    use_milp: bool = True,
 ) -> List[Dict]:
+    """use_milp=False picks the same start by direct comparison (identical result, much faster).
+    It is used for the 12-month projections, which would otherwise start dozens of CBC solver processes."""
     results = []
     for machine in machines:
         power_kw = machine_power_kw(machine)
@@ -101,6 +113,11 @@ def optimize_schedule(
             continue
 
         costs = {s: cost_for_window(power_kw, s, required_slots, slot_minutes, tariffs) for s in starts}
+
+        if not use_milp:
+            chosen = min(starts, key=lambda s: (round(costs[s], 6), s))  # cheapest, earliest on ties
+            results.append(_result(machine, power_kw, chosen, costs, starts, required_slots, slot_minutes))
+            continue
 
         # Binary choice: exactly one start time per machine, minimise its cost.
         # The tiny 1e-6 * start term breaks ties in favour of the earlier start.
@@ -116,17 +133,22 @@ def optimize_schedule(
         if chosen is None:
             continue
 
-        cost = costs[chosen]
-        baseline = costs[starts[0]]
-        results.append({
-            "machine_id": machine.id,
-            "machine_name": machine.name,
-            "scheduled_start": minutes_to_time(chosen),
-            "scheduled_end": minutes_to_time(chosen + required_slots * slot_minutes),
-            "energy_kwh": round(power_kw * required_slots * slot_minutes / 60.0, 2),
-            "cost": round(cost, 2),
-            "total_power_kw": round(power_kw, 3),
-            "required_hours": machine.required_hours,
-            "saving": round(max(baseline - cost, 0), 2),
-        })
+        results.append(_result(machine, power_kw, chosen, costs, starts, required_slots, slot_minutes))
     return results
+
+
+def _result(machine, power_kw, chosen, costs, starts, required_slots, slot_minutes) -> Dict:
+    """Shape one machine's result; saving is measured against its usual (un-optimized) start."""
+    cost = costs[chosen]
+    baseline = costs[baseline_start(machine, starts)]
+    return {
+        "machine_id": machine.id,
+        "machine_name": machine.name,
+        "scheduled_start": minutes_to_time(chosen),
+        "scheduled_end": minutes_to_time(chosen + required_slots * slot_minutes),
+        "energy_kwh": round(power_kw * required_slots * slot_minutes / 60.0, 2),
+        "cost": round(cost, 2),
+        "total_power_kw": round(power_kw, 3),
+        "required_hours": machine.required_hours,
+        "saving": round(max(baseline - cost, 0), 2),
+    }

@@ -1,3 +1,4 @@
+import json
 from datetime import date
 from typing import Optional
 from sqlalchemy import select, delete
@@ -7,14 +8,17 @@ from app.models.machine import Machine
 from app.models.tariff import Tariff
 from app.models.optimization import OptimizationResult, OptimizationSummary
 from app.models.report import Report
+from app.models.planning import OptimizationRun
+from app.services.planning import productive_hours
 from app.services.optimizer import optimize_schedule, calculate_baseline_cost
 
 
-async def recalculate(db: AsyncSession, factory: Factory) -> dict:
+async def recalculate(db: AsyncSession, factory: Factory, trigger: Optional[str] = None) -> dict:
     """Re-run the optimizer for a factory and replace its stored schedule, summary and today's report.
 
     Called after every machine / factory change so the stored result never goes stale.
     The caller commits. `error` is set when nothing could be scheduled (old results are cleared).
+    When `trigger` is given, the run is also saved to the history table.
     """
     machines = (await db.execute(select(Machine).where(Machine.factory_id == factory.id))).scalars().all()
     tariffs = (await db.execute(select(Tariff))).scalars().all()
@@ -72,6 +76,20 @@ async def recalculate(db: AsyncSession, factory: Factory) -> dict:
     report.saving = daily_saving
     report.energy_kwh = total_energy
     report.saving_percentage = saving_pct
+
+    if trigger:
+        db.add(OptimizationRun(
+            factory_id=factory.id, trigger=trigger[:150],
+            current_cost=current_cost, optimized_cost=optimized_cost, daily_saving=daily_saving,
+            saving_percentage=saving_pct, energy_kwh=total_energy,
+            productive_hours=round(productive_hours(factory.start_time, factory.end_time), 2),
+            machines_scheduled=len(optimized),
+            schedule_json=json.dumps([
+                {"machine_name": i["machine_name"], "start": i["scheduled_start"].strftime("%H:%M"),
+                 "end": i["scheduled_end"].strftime("%H:%M"), "energy_kwh": i["energy_kwh"], "cost": i["cost"]}
+                for i in optimized
+            ]),
+        ))
 
     scheduled_ids = {i["machine_id"] for i in optimized}
     out.update(

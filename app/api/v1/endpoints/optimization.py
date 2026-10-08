@@ -16,7 +16,7 @@ async def run_optimization(
     if not factory:
         raise HTTPException(status_code=400, detail="No factory linked")
 
-    result = await recalculate(db, factory)
+    result = await recalculate(db, factory, trigger="Manual re-run")
     if result["error"]:
         await db.commit()  # keeps the cleared (empty) result so nothing stale is shown
         raise HTTPException(status_code=400, detail=result["error"])
