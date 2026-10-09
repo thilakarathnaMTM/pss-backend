@@ -6,13 +6,13 @@ from app.core.config import get_settings
 from app.db.session import engine, AsyncSessionLocal
 from app.db.base import Base
 from app.api.v1.api import api_router
-from app.models.user import User  # noqa: F401  (models are imported so their tables are registered)
+from app.models.user import User 
 from app.models.factory import Factory
-from app.models.machine import Machine  # noqa: F401
-from app.models.tariff import Tariff  # noqa: F401
-from app.models.report import Report  # noqa: F401
-from app.models.optimization import OptimizationResult, OptimizationSummary  # noqa: F401
-from app.models.planning import MonthlyProfile, OptimizationRun  # noqa: F401
+from app.models.machine import Machine  
+from app.models.tariff import Tariff  
+from app.models.report import Report  
+from app.models.optimization import OptimizationResult, OptimizationSummary  
+from app.models.planning import MonthlyProfile, OptimizationRun  
 from app.services.scheduler import recalculate
 from app.seed import seed_database, add_missing_columns
 
